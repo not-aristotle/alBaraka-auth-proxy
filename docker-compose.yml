@@ -1,0 +1,170 @@
+version: "3.5"
+
+services:
+  postgres:
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    image: postgres:12
+    restart: always
+    environment:
+      POSTGRES_DB: "${POSTGRES_DB}"
+      POSTGRES_USER: "${POSTGRES_USER}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
+    volumes:
+      - ./rproxy-data/postgres/data:/var/lib/postgresql/data
+    networks:
+      - backend
+
+  migrate:
+    build: ./rproxy-backend
+    environment:
+      PYTHONPATH: "/app"
+      RPROXY_SQLALCHEMY_DATABASE_URI: "postgres+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}"
+    command: ["/app/wait-for-it.sh", "postgres:5432", "-s", "-t", "0", "--", "alembic", "upgrade", "head"]
+    networks:
+      - backend
+    depends_on:
+      - postgres
+
+  rabbitmq:
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    image: rabbitmq:3.8.5
+    environment:
+      RABBITMQ_DEFAULT_USER: "${RABBITMQ_USER}"
+      RABBITMQ_DEFAULT_PASS: "${RABBITMQ_PASSWORD}"
+    hostname: mainmq
+    restart: always
+    volumes:
+      - ./rproxy-data/rabbitmq/db:/var/lib/rabbitmq
+    networks:
+      - backend
+
+  beat:
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    build: ./rproxy-backend
+    environment:
+      CELERY_BEAT_SCHEDULE: "/celery-beat/celery-beat-schedule"
+      CELERY_BEAT_LOGLEVEL: "INFO"
+      PYTHONPATH: "/app"
+      RPROXY_CONFIG: "config.ProductionConfig"
+      RPROXY_CELERY_BROKER_URL: "pyamqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq//"
+    command: ["/app/celery-beat.sh", "app:celery_app"]
+    restart: always
+    volumes:
+      - ./rproxy-data/celery-beat:/celery-beat
+    networks:
+      - backend
+    depends_on:
+      - migrate
+      - rabbitmq
+
+  worker:
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    build: ./rproxy-backend
+    environment:
+      CELERY_WORKER_NAME: "worker@%h"
+      CELERY_WORKER_QUEUE: "token"
+      CELERY_WORKER_POOL: "prefork"
+      CELERY_WORKER_CONCURRENCY: "1"
+      CELERY_WORKER_MAX_MEMORY_PER_CHILD: "131072"
+      CELERY_WORKER_MAX_TASKS_PER_CHILD: "1000"
+      CELERY_WORKER_LOGLEVEL: "INFO"
+      PYTHONPATH: "/app"
+      RPROXY_CONFIG: "config.ProductionConfig"
+      RPROXY_LOGLEVEL: "INFO"
+      RPROXY_TAKE_ACCESS_TOKEN_ENDPOINT: "${ACCESS_TOKEN_ENDPOINT}"
+      RPROXY_TAKE_ACCESS_TOKEN_TIMEOUT: "${ACCESS_TOKEN_TIMEOUT}"
+      RPROXY_CLIENT_ID: "${CLIENT_ID}"
+      RPROXY_CLIENT_SECRET: "${CLIENT_SECRET}"
+      RPROXY_API_ENDPOINT: "${API_ENDPOINT}"
+      RPROXY_API_TIMEOUT: "${API_TIMEOUT}"
+      RPROXY_SQLALCHEMY_DATABASE_URI: "postgres+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}"
+      RPROXY_CELERY_BROKER_URL: "pyamqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq//"
+    command: ["/app/celery-worker.sh", "app:celery_app"]
+    restart: always
+    networks:
+      - backend
+    depends_on:
+      - migrate
+      - rabbitmq
+
+  gunicorn:
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    build: ./rproxy-backend
+    environment:
+      GUNICORN_BIND_ADDRESS: "0.0.0.0"
+      GUNICORN_BIND_PORT: "8000"
+      GUNICORN_WORKERS: "1"
+      GUNICORN_WORKER_CLASS: "gevent"
+      GUNICORN_MAX_REQUESTS: "1000"
+      GUNICORN_MAX_REQUESTS_JITTER: "1000"
+      PYTHONPATH: "/app"
+      RPROXY_CONFIG: "config.ProductionConfig"
+      RPROXY_LOGLEVEL: "INFO"
+      RPROXY_TAKE_ACCESS_TOKEN_ENDPOINT: "${ACCESS_TOKEN_ENDPOINT}"
+      RPROXY_TAKE_ACCESS_TOKEN_TIMEOUT: "${ACCESS_TOKEN_TIMEOUT}"
+      RPROXY_CLIENT_ID: "${CLIENT_ID}"
+      RPROXY_CLIENT_SECRET: "${CLIENT_SECRET}"
+      RPROXY_API_ENDPOINT: "${API_ENDPOINT}"
+      RPROXY_API_TIMEOUT: "${API_TIMEOUT}"
+      RPROXY_PRIVATE_KEY: "/pkcs8.key"
+      RPROXY_SQLALCHEMY_DATABASE_URI: "postgres+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}"
+      RPROXY_CELERY_BROKER_URL: "pyamqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq//"
+    command: ["/app/gunicorn.sh", "app:flask_app"]
+    restart: always
+    volumes:
+      - ./rproxy-data/gunicorn/keys/pkcs8.key:/pkcs8.key
+    networks:
+      - backend
+    depends_on:
+      - migrate
+      - rabbitmq
+
+  nginx:
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    image: umputun/nginx-le:latest
+    hostname: nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - TZ=UTC
+      - LETSENCRYPT=true
+      - LE_EMAIL=admin@zenmoapp.com
+      - LE_FQDN=zenmoapp.com
+    volumes:
+      - ./rproxy-data/ssl:/etc/nginx/ssl
+      - ./rproxy-data/nginx/conf.d/service.conf:/etc/nginx/service.conf
+    restart: always
+    networks:
+      - frontend
+      - backend
+    depends_on:
+      - gunicorn
+
+networks:
+  frontend:
+  backend:
