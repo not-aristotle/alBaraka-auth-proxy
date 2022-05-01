@@ -29,7 +29,10 @@ target_metadata = db.Model.metadata
 
 
 def get_url():
-    return environ.get('RPROXY_SQLALCHEMY_DATABASE_URI', config.get_main_option("sqlalchemy.url"))
+    return environ.get(
+        "RPROXY_SQLALCHEMY_DATABASE_URI",
+        config.get_main_option("sqlalchemy.url"),
+    )
 
 
 def run_migrations_offline():
@@ -64,7 +67,10 @@ def run_migrations_online():
 
     """
     connectable = engine_from_config(
-        {**config.get_section(config.config_ini_section), 'sqlalchemy.url': get_url()},
+        {
+            **config.get_section(config.config_ini_section),
+            "sqlalchemy.url": get_url(),
+        },
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
     )

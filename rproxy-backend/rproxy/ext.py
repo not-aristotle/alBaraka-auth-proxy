@@ -3,4 +3,4 @@ from celery import Celery
 
 
 db = SQLAlchemy()
-celery = Celery(__name__.rsplit('.', 1)[0])
+celery = Celery(__name__.rsplit(".", 1)[0])
